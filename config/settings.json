@@ -1,1 +1,5 @@
-{"database":"cricket_research.sqlite","verify_after_import":true}
+{
+  "database": "cricket_research.sqlite",
+  "commit_batch_size": 5000,
+  "log_level": "INFO"
+}
