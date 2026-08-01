@@ -1,1 +1,1 @@
-"""Version 0.4: Betfair historical stream parser."""
+# v0.4 parser

@@ -1,1 +1,1 @@
-"""Version 1.0: Import controller."""
+# v0.6 importer

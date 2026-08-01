@@ -1,11 +1,10 @@
-# Betfair Research Lab v0.2
+# Betfair Research Lab v0.3
 
-This release adds a real database layer.
+Adds a real archive reader.
 
-Features:
-- SQLite schema with core research tables
-- Database manager
-- CLI initialisation
+New in v0.3:
+- TAR archive scanner
+- BZ2 file enumeration
+- Archive statistics
 - Logging scaffold
-- Configuration file
-- Ready for archive reader (v0.3)
+- Database initialisation
