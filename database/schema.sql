@@ -81,3 +81,31 @@ CREATE TABLE IF NOT EXISTS integrity_log(
 CREATE INDEX IF NOT EXISTS idx_markets_time ON markets(market_time);
 CREATE INDEX IF NOT EXISTS idx_prices_market_time ON price_history(market_id,publish_time);
 CREATE INDEX IF NOT EXISTS idx_integrity_market ON integrity_log(market_id);
+
+
+CREATE TABLE IF NOT EXISTS market_summary(
+  market_id TEXT PRIMARY KEY,
+  market_time TEXT NOT NULL,
+  event_name TEXT NOT NULL,
+  home_selection_id INTEGER,
+  home_name TEXT,
+  away_selection_id INTEGER,
+  away_name TEXT,
+  draw_selection_id INTEGER,
+  draw_name TEXT,
+  winner_role TEXT,
+  first_inplay_time INTEGER,
+  home_preplay_ltp REAL,
+  away_preplay_ltp REAL,
+  draw_preplay_ltp REAL,
+  home_min_ltp REAL,
+  home_max_ltp REAL,
+  away_min_ltp REAL,
+  away_max_ltp REAL,
+  draw_min_ltp REAL,
+  draw_max_ltp REAL,
+  price_rows INTEGER NOT NULL DEFAULT 0,
+  derived_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(market_id) REFERENCES markets(market_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_summary_time ON market_summary(market_time);

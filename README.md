@@ -1,52 +1,35 @@
-# Betfair Research Lab v0.7
+# Betfair Research Lab v0.8
 
-This is the first complete Test Match Odds importer release.
+Version 0.8 keeps the working v0.7 importer and adds a compact research layer.
 
-## What it does
+## Current workflow
 
-- Opens Betfair `.tar` archives containing `.bz2` historical market streams.
-- Ignores archive folder names and reads Betfair market metadata.
-- Keeps only three-runner `MATCH_ODDS` markets with a Draw.
-- Identifies Test matches from explicit Test wording or recognised Test nations.
-- Imports markets, runners, price history, best available prices and settlements.
-- Prevents duplicate archives using SHA-256.
-- Prevents duplicate Betfair market IDs and duplicate team/date match keys.
-- Logs corrupt files, missing prices and missing settlements.
-- Reports exactly which years and months are in the database.
-- Runs database integrity checks.
+1. Install Python 3.11+ and tick **Add Python to PATH**.
+2. Double-click `install_requirements.bat` once.
+3. Drag a Betfair `.tar` archive onto `import_archive.bat`.
+4. Double-click `verify_database.bat`.
+5. Double-click `build_summaries.bat`.
+6. Double-click `export_for_chatgpt.bat` to create
+   `cricket_research_summary.csv`.
 
-## Windows setup
+## New in v0.8
 
-1. Install Python 3.11 or newer from python.org.
-2. During installation tick **Add Python to PATH**.
-3. Extract this project ZIP.
-4. Double-click `install_requirements.bat`.
+- `market_summary` table: one compact row per Test market.
+- Correct pre-play price selection using the first in-play timestamp.
+- Minimum/maximum traded prices for home, away and draw.
+- Winner role and price-row counts.
+- `derive` command to rebuild summaries.
+- `export` command and one-click ChatGPT export.
 
-## Import an archive
-
-Drag a Betfair `.tar` file onto `import_archive.bat`.
-
-The program creates or updates:
-
-`cricket_research.sqlite`
-
-You can import further archives the same way. Existing data is preserved and duplicates are skipped.
-
-## Check the database
-
-Double-click:
-
-- `database_stats.bat`
-- `verify_database.bat`
-
-## Command-line alternatives
+## Commands
 
 ```bat
 python cricket_research.py import "C:\Betfair\data.tar" --database cricket_research.sqlite
-python cricket_research.py stats --database cricket_research.sqlite
 python cricket_research.py verify --database cricket_research.sqlite
+python cricket_research.py derive --database cricket_research.sqlite
+python cricket_research.py export cricket_research_summary.csv --database cricket_research.sqlite
 ```
 
-## Note
-
-This release is for building and validating the historical database. Strategy optimisation is the next stage after the imported data has been checked.
+The full SQLite database remains on your PC. The compact CSV is easier to
+upload here for initial analysis; the SQLite file can still be uploaded when
+full price-path testing is needed.

@@ -14,6 +14,7 @@ def database_stats(path: str) -> dict:
             "markets": con.execute("SELECT COUNT(*) FROM markets").fetchone()[0],
             "runners": con.execute("SELECT COUNT(*) FROM runners").fetchone()[0],
             "price_rows": con.execute("SELECT COUNT(*) FROM price_history").fetchone()[0],
+            "market_summaries": con.execute("SELECT COUNT(*) FROM market_summary").fetchone()[0],
             "settled": con.execute("SELECT COUNT(*) FROM markets WHERE settled=1").fetchone()[0],
             "unsettled": con.execute("SELECT COUNT(*) FROM markets WHERE settled=0").fetchone()[0],
             "coverage": coverage,
