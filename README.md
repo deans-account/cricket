@@ -1,13 +1,11 @@
-# Betfair Research Lab - Sprint 1
+# Betfair Research Lab v0.2
 
-This is the foundation of the Betfair Research Lab project.
+This release adds a real database layer.
 
-Current features:
-- Project structure
-- SQLite schema creation
-- Import log support
-- Command-line launcher
-- Placeholder importer
-- Report skeleton
-
-Sprint 2 will add Betfair .tar/.bz2 parsing and database population.
+Features:
+- SQLite schema with core research tables
+- Database manager
+- CLI initialisation
+- Logging scaffold
+- Configuration file
+- Ready for archive reader (v0.3)

@@ -1,13 +1,15 @@
 import argparse
-from database.database import create_database
+from database.database import Database
 
-p=argparse.ArgumentParser()
-sub=p.add_subparsers(dest="cmd")
-i=sub.add_parser("init")
-i.add_argument("database")
-args=p.parse_args()
+parser=argparse.ArgumentParser(description="Betfair Cricket Research")
+sub=parser.add_subparsers(dest="cmd")
+p=sub.add_parser("init")
+p.add_argument("db")
+args=parser.parse_args()
+
 if args.cmd=="init":
-    create_database(args.database)
-    print(f"Created {args.database}")
+    db=Database(args.db)
+    db.initialise()
+    print(f"Database initialised: {args.db}")
 else:
-    p.print_help()
+    parser.print_help()
