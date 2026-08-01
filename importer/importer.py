@@ -1,112 +1,120 @@
 from __future__ import annotations
-
 import tarfile
 from pathlib import Path
 from typing import Any
 
 from database.database import Database
-from importer.archive_reader import sha256_file
-from importer.betfair_parser import iter_messages, metadata_from_definition
-from importer.market_filter import classify_test_match
+from .common import DRAW_NAMES, norm, sha256_file
+from .parser import first_definition, iter_messages
+from .classifier import is_test_match
 
 
-def _best_price(levels: list, side: str) -> tuple[float | None, float | None]:
-    if not levels:
-        return None, None
-    valid = [x for x in levels if isinstance(x, list) and len(x) >= 2 and x[1] > 0]
-    if not valid:
-        return None, None
-    item = max(valid, key=lambda x: x[0]) if side == "back" else min(valid, key=lambda x: x[0])
-    return float(item[0]), float(item[1])
+def _match_key(definition: dict) -> str:
+    date = (definition.get("marketTime") or "")[:10]
+    teams = sorted(
+        norm(r.get("name")) for r in definition.get("runners", [])
+        if norm(r.get("name")) not in DRAW_NAMES
+    )
+    return "|".join([date, *teams])
 
 
-def _extract_updates(raw_bz2: bytes) -> dict[str, Any]:
+def _update_ladder(ladder: dict[float, float], updates: list | None) -> None:
+    for item in updates or []:
+        if not isinstance(item, list) or len(item) < 2:
+            continue
+        price, size = float(item[0]), float(item[1])
+        if size <= 0:
+            ladder.pop(price, None)
+        else:
+            ladder[price] = size
+
+
+def _parse_full(raw_bz2: bytes) -> dict[str, Any]:
     market_id = None
-    current_definition = None
-    first_publish_time = None
-    last_publish_time = None
-    metadata = None
-    runners: dict[int, dict[str, Any]] = {}
-    prices: list[tuple] = []
-    settlements: dict[int, tuple[str | None, int | None]] = {}
-    current_in_play = None
+    first_definition_obj = None
+    final_definition = None
+    first_pt = None
+    last_pt = None
+    current_inplay = None
     current_status = None
+    market_total = None
+    runner_defs: dict[int, dict] = {}
+    state: dict[int, dict[str, Any]] = {}
+    rows: list[tuple] = []
 
     for message in iter_messages(raw_bz2):
         pt = message.get("pt")
         if isinstance(pt, int):
-            first_publish_time = pt if first_publish_time is None else first_publish_time
-            last_publish_time = pt
+            if first_pt is None:
+                first_pt = pt
+            last_pt = pt
 
-        if message.get("op") != "mcm":
-            continue
-
-        for mc in message.get("mc", []):
-            market_id = mc.get("id", market_id)
-            definition = mc.get("marketDefinition")
+        for change in message.get("mc", []):
+            market_id = change.get("id", market_id)
+            definition = change.get("marketDefinition")
             if definition:
-                current_definition = definition
-                current_in_play = definition.get("inPlay", current_in_play)
+                if first_definition_obj is None:
+                    first_definition_obj = definition
+                final_definition = definition
+                current_inplay = definition.get("inPlay", current_inplay)
                 current_status = definition.get("status", current_status)
-                metadata = metadata_from_definition(
-                    market_id, definition, "", first_publish_time
-                )
                 for runner in definition.get("runners", []):
-                    selection_id = runner.get("id")
-                    if selection_id is None:
-                        continue
-                    runners[int(selection_id)] = {
-                        "selection_id": int(selection_id),
-                        "runner_name": runner.get("name"),
-                        "sort_priority": runner.get("sortPriority"),
-                        "status": runner.get("status"),
-                        "adjustment_factor": runner.get("adjustmentFactor"),
-                    }
-                    if runner.get("status") in {"WINNER", "LOSER", "REMOVED"}:
-                        settlements[int(selection_id)] = (runner.get("status"), pt)
+                    sid = int(runner["id"])
+                    runner_defs[sid] = {**runner_defs.get(sid, {}), **runner}
+                    state.setdefault(sid, {
+                        "ltp": None, "tv": None, "backs": {}, "lays": {}
+                    })
 
-            for rc in mc.get("rc", []):
-                selection_id = rc.get("id")
-                if selection_id is None or pt is None:
+            if "tv" in change:
+                market_total = change.get("tv")
+
+            for runner_change in change.get("rc", []):
+                if pt is None:
                     continue
-                atb = rc.get("atb") or []
-                atl = rc.get("atl") or []
-                best_back_price, best_back_size = _best_price(atb, "back")
-                best_lay_price, best_lay_size = _best_price(atl, "lay")
-                prices.append((
-                    market_id,
-                    int(pt),
-                    int(selection_id),
-                    rc.get("ltp"),
-                    rc.get("tv"),
-                    best_back_price,
-                    best_back_size,
-                    best_lay_price,
-                    best_lay_size,
-                    int(bool(current_in_play)) if current_in_play is not None else None,
+                sid = int(runner_change["id"])
+                runner_state = state.setdefault(sid, {
+                    "ltp": None, "tv": None, "backs": {}, "lays": {}
+                })
+                if "ltp" in runner_change:
+                    runner_state["ltp"] = runner_change.get("ltp")
+                if "tv" in runner_change:
+                    runner_state["tv"] = runner_change.get("tv")
+                if "atb" in runner_change:
+                    _update_ladder(runner_state["backs"], runner_change.get("atb"))
+                if "atl" in runner_change:
+                    _update_ladder(runner_state["lays"], runner_change.get("atl"))
+
+                best_back = max(runner_state["backs"], default=None)
+                best_lay = min(runner_state["lays"], default=None)
+                rows.append((
+                    market_id, int(pt), sid,
+                    runner_state["ltp"],
+                    best_back,
+                    runner_state["backs"].get(best_back) if best_back is not None else None,
+                    best_lay,
+                    runner_state["lays"].get(best_lay) if best_lay is not None else None,
+                    runner_state["tv"], market_total,
+                    int(bool(current_inplay)) if current_inplay is not None else None,
                     current_status,
                 ))
 
-    if metadata is None or current_definition is None or market_id is None:
-        raise ValueError("Market definition not found")
+    if not market_id or first_definition_obj is None:
+        raise ValueError("No market definition found")
 
-    metadata["first_publish_time"] = first_publish_time
-    metadata["last_publish_time"] = last_publish_time
     return {
         "market_id": market_id,
-        "metadata": metadata,
-        "runners": list(runners.values()),
-        "prices": prices,
-        "settlements": settlements,
+        "first_definition": first_definition_obj,
+        "final_definition": final_definition or first_definition_obj,
+        "first_publish_time": first_pt,
+        "last_publish_time": last_pt,
+        "runner_defs": runner_defs,
+        "price_rows": rows,
     }
 
 
-def _log(connection, import_id, severity, code, message, market_id=None):
-    connection.execute(
-        """
-        INSERT INTO integrity_log(import_id, market_id, severity, code, message)
-        VALUES (?, ?, ?, ?, ?)
-        """,
+def _log(con, import_id: int, severity: str, code: str, message: str, market_id=None) -> None:
+    con.execute(
+        "INSERT INTO integrity_log(import_id,market_id,severity,code,message) VALUES(?,?,?,?,?)",
         (import_id, market_id, severity, code, message),
     )
 
@@ -115,17 +123,18 @@ def import_archive(
     archive_path: str | Path,
     database_path: str | Path,
     limit: int | None = None,
-    include_uncertain: bool = False,
 ) -> dict:
     archive_path = Path(archive_path)
-    database = Database(database_path)
-    database.initialise()
-    archive_hash = sha256_file(archive_path)
+    if not archive_path.exists():
+        raise FileNotFoundError(archive_path)
 
-    with database.connect() as connection:
-        existing = connection.execute(
-            "SELECT id, status FROM imports WHERE archive_sha256 = ?",
-            (archive_hash,),
+    db = Database(database_path)
+    db.initialise()
+    digest = sha256_file(archive_path)
+
+    with db.connect() as con:
+        existing = con.execute(
+            "SELECT id,status FROM imports WHERE archive_sha256=?", (digest,)
         ).fetchone()
         if existing and existing["status"] == "completed":
             return {
@@ -133,222 +142,156 @@ def import_archive(
                 "archive": archive_path.name,
                 "import_id": existing["id"],
             }
-
-        cursor = connection.execute(
-            """
-            INSERT OR REPLACE INTO imports(
-                id, archive_name, archive_path, archive_sha256, status
+        if existing:
+            import_id = existing["id"]
+            con.execute(
+                "UPDATE imports SET status='running',started_at=CURRENT_TIMESTAMP,completed_at=NULL WHERE id=?",
+                (import_id,),
             )
-            VALUES (
-                COALESCE((SELECT id FROM imports WHERE archive_sha256 = ?), NULL),
-                ?, ?, ?, 'running'
+        else:
+            cur = con.execute(
+                "INSERT INTO imports(archive_name,archive_sha256,status) VALUES(?,?,'running')",
+                (archive_path.name, digest),
             )
-            """,
-            (archive_hash, archive_path.name, str(archive_path), archive_hash),
-        )
-        import_id = cursor.lastrowid
-        if not import_id:
-            import_id = connection.execute(
-                "SELECT id FROM imports WHERE archive_sha256 = ?",
-                (archive_hash,),
-            ).fetchone()["id"]
-        connection.commit()
+            import_id = cur.lastrowid
+        con.commit()
 
     counts = {
         "files_scanned": 0,
-        "markets_parsed": 0,
-        "test_markets_found": 0,
         "markets_imported": 0,
         "duplicates_skipped": 0,
         "errors": 0,
-        "uncertain_skipped": 0,
     }
 
     try:
-        with tarfile.open(archive_path, "r:*") as archive, database.connect() as connection:
+        with tarfile.open(archive_path, "r:*") as archive, db.connect() as con:
             for member in archive:
-                if not member.isfile() or not member.name.lower().endswith(".bz2"):
+                if not (member.isfile() and member.name.lower().endswith(".bz2")):
                     continue
                 if limit is not None and counts["files_scanned"] >= limit:
                     break
-
                 counts["files_scanned"] += 1
-                extracted = archive.extractfile(member)
-                if extracted is None:
-                    counts["errors"] += 1
-                    _log(connection, import_id, "ERROR", "EXTRACT_FAILED", member.name)
-                    continue
 
                 try:
-                    raw = extracted.read()
-                    parsed = _extract_updates(raw)
-                    counts["markets_parsed"] += 1
-                    metadata = parsed["metadata"]
-                    metadata["source_file"] = member.name
-                    classification, reason = classify_test_match(metadata)
-
-                    if classification == "excluded":
+                    handle = archive.extractfile(member)
+                    if handle is None:
+                        raise ValueError("Archive member could not be extracted")
+                    raw = handle.read()
+                    market_id, definition, _ = first_definition(raw)
+                    if not definition or not market_id:
+                        continue
+                    is_test, reason = is_test_match(definition)
+                    if not is_test:
                         continue
 
-                    counts["test_markets_found"] += 1
-                    if classification == "uncertain_test" and not include_uncertain:
-                        counts["uncertain_skipped"] += 1
-                        _log(
-                            connection, import_id, "WARNING", "UNCERTAIN_TEST",
-                            f"{metadata.get('event_name')}: {reason}",
-                            parsed["market_id"],
-                        )
-                        continue
-
-                    exists = connection.execute(
-                        "SELECT 1 FROM markets WHERE market_id = ?",
-                        (parsed["market_id"],),
+                    key = _match_key(definition)
+                    duplicate = con.execute(
+                        "SELECT market_id FROM markets WHERE market_id=? OR match_key=?",
+                        (market_id, key),
                     ).fetchone()
-                    if exists:
+                    if duplicate:
                         counts["duplicates_skipped"] += 1
                         continue
 
-                    winner_ids = [
-                        selection_id
-                        for selection_id, (status, _) in parsed["settlements"].items()
-                        if status == "WINNER"
-                    ]
-                    winner_id = winner_ids[0] if len(winner_ids) == 1 else None
-                    settled = int(bool(parsed["settlements"]))
+                    con.execute("SAVEPOINT market_import")
+                    parsed = _parse_full(raw)
+                    final_definition = parsed["final_definition"]
+                    runners = definition.get("runners", [])
+                    winner = next(
+                        (int(r["id"]) for r in final_definition.get("runners", [])
+                         if r.get("status") == "WINNER"),
+                        None,
+                    )
+                    competition = definition.get("competition")
+                    if isinstance(competition, dict):
+                        competition = competition.get("name")
 
-                    connection.execute(
+                    con.execute(
                         """
                         INSERT INTO markets(
-                            market_id, event_name, market_name, market_type, market_time,
-                            event_type_id, competition, country_code, timezone,
-                            number_of_winners, status, in_play, classification,
-                            classification_reason, source_import_id, settled,
-                            winner_selection_id, first_publish_time, last_publish_time
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          market_id,match_key,event_name,market_name,market_type,market_time,
+                          competition,country_code,source_import_id,source_member,
+                          first_publish_time,last_publish_time,final_status,final_in_play,
+                          winner_selection_id,settled
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         (
-                            parsed["market_id"], metadata.get("event_name"),
-                            metadata.get("market_name"), metadata.get("market_type"),
-                            metadata.get("market_time"), metadata.get("event_type_id"),
-                            metadata.get("competition"), metadata.get("country_code"),
-                            metadata.get("timezone"), metadata.get("number_of_winners"),
-                            metadata.get("status"), int(bool(metadata.get("in_play")))
-                            if metadata.get("in_play") is not None else None,
-                            classification, reason, import_id, settled, winner_id,
-                            metadata.get("first_publish_time"),
-                            metadata.get("last_publish_time"),
+                            market_id, key, definition.get("eventName"), definition.get("name"),
+                            definition.get("marketType"), definition.get("marketTime"),
+                            competition, definition.get("countryCode"), import_id, member.name,
+                            parsed["first_publish_time"], parsed["last_publish_time"],
+                            final_definition.get("status"),
+                            int(bool(final_definition.get("inPlay"))) if "inPlay" in final_definition else None,
+                            winner, int(winner is not None),
                         ),
                     )
 
-                    connection.executemany(
-                        """
-                        INSERT INTO runners(
-                            market_id, selection_id, runner_name, sort_priority,
-                            status, adjustment_factor
-                        ) VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        [
-                            (
-                                parsed["market_id"], r["selection_id"], r["runner_name"],
-                                r["sort_priority"], r["status"], r["adjustment_factor"],
-                            )
-                            for r in parsed["runners"]
-                        ],
+                    team_index = 0
+                    final_by_id = {int(r["id"]): r for r in final_definition.get("runners", [])}
+                    for runner in runners:
+                        sid = int(runner["id"])
+                        name = runner.get("name", str(sid))
+                        if norm(name) in DRAW_NAMES:
+                            role = "draw"
+                        else:
+                            role = "home" if team_index == 0 else "away"
+                            team_index += 1
+                        final_runner = final_by_id.get(sid, runner)
+                        con.execute(
+                            "INSERT INTO runners VALUES(?,?,?,?,?,?)",
+                            (market_id, sid, name, role, runner.get("sortPriority"), final_runner.get("status")),
+                        )
+
+                    valid_runner_ids = {int(r["id"]) for r in runners}
+                    valid_rows = [
+                        row for row in parsed["price_rows"]
+                        if row[0] == market_id and row[2] in valid_runner_ids
+                    ]
+                    con.executemany(
+                        "INSERT OR REPLACE INTO price_history VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        valid_rows,
                     )
 
-                    connection.executemany(
-                        """
-                        INSERT OR IGNORE INTO price_history(
-                            market_id, publish_time, selection_id, last_traded_price,
-                            total_matched, best_back_price, best_back_size,
-                            best_lay_price, best_lay_size, in_play, market_status
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        parsed["prices"],
-                    )
-
-                    connection.executemany(
-                        """
-                        INSERT OR REPLACE INTO settlements(
-                            market_id, selection_id, runner_status, settled_at
-                        ) VALUES (?, ?, ?, ?)
-                        """,
-                        [
-                            (
-                                parsed["market_id"], selection_id, status, settled_at
-                            )
-                            for selection_id, (status, settled_at)
-                            in parsed["settlements"].items()
-                        ],
-                    )
-
-                    if len(parsed["runners"]) != 3:
-                        _log(
-                            connection, import_id, "ERROR", "RUNNER_COUNT",
-                            f"Expected 3 runners, found {len(parsed['runners'])}",
-                            parsed["market_id"],
-                        )
-                    if not parsed["prices"]:
-                        _log(
-                            connection, import_id, "ERROR", "NO_PRICE_HISTORY",
-                            "No runner price updates were found",
-                            parsed["market_id"],
-                        )
-                    if not settled:
-                        _log(
-                            connection, import_id, "WARNING", "UNSETTLED",
-                            "No settlement statuses found",
-                            parsed["market_id"],
-                        )
+                    if not valid_rows:
+                        _log(con, import_id, "ERROR", "NO_PRICES", "No price changes found", market_id)
+                    if winner is None:
+                        _log(con, import_id, "WARNING", "UNSETTLED", "No winner found", market_id)
 
                     counts["markets_imported"] += 1
-                    if counts["markets_imported"] % 10 == 0:
-                        connection.commit()
+                    con.execute("RELEASE SAVEPOINT market_import")
+                    if counts["markets_imported"] % 5 == 0:
+                        con.commit()
 
                 except Exception as exc:
+                    try:
+                        con.execute("ROLLBACK TO SAVEPOINT market_import")
+                        con.execute("RELEASE SAVEPOINT market_import")
+                    except Exception:
+                        pass
                     counts["errors"] += 1
-                    _log(
-                        connection, import_id, "ERROR", "PARSE_FAILED",
-                        f"{member.name}: {exc}",
-                    )
+                    _log(con, import_id, "ERROR", "PARSE_ERROR", f"{member.name}: {exc}")
 
-            connection.execute(
+            con.execute(
                 """
-                UPDATE imports
-                SET completed_at = CURRENT_TIMESTAMP,
-                    status = 'completed',
-                    files_scanned = ?,
-                    markets_parsed = ?,
-                    test_markets_found = ?,
-                    markets_imported = ?,
-                    duplicates_skipped = ?,
-                    errors = ?
-                WHERE id = ?
+                UPDATE imports SET completed_at=CURRENT_TIMESTAMP,status='completed',
+                  files_scanned=?,markets_imported=?,duplicates_skipped=?,errors=?
+                WHERE id=?
                 """,
                 (
-                    counts["files_scanned"], counts["markets_parsed"],
-                    counts["test_markets_found"], counts["markets_imported"],
+                    counts["files_scanned"], counts["markets_imported"],
                     counts["duplicates_skipped"], counts["errors"], import_id,
                 ),
             )
-            connection.commit()
+            con.commit()
 
-        return {
-            "status": "completed",
-            "archive": archive_path.name,
-            "import_id": import_id,
-            **counts,
-        }
+        return {"status": "completed", "archive": archive_path.name, "import_id": import_id, **counts}
 
     except Exception as exc:
-        with database.connect() as connection:
-            connection.execute(
-                """
-                UPDATE imports
-                SET completed_at = CURRENT_TIMESTAMP, status = 'failed', notes = ?
-                WHERE id = ?
-                """,
-                (str(exc), import_id),
+        with db.connect() as con:
+            con.execute(
+                "UPDATE imports SET status='failed',completed_at=CURRENT_TIMESTAMP WHERE id=?",
+                (import_id,),
             )
-            connection.commit()
+            _log(con, import_id, "ERROR", "IMPORT_FAILED", str(exc))
+            con.commit()
         raise

@@ -1,85 +1,52 @@
-# Betfair Research Lab v0.5
+# Betfair Research Lab v0.7
 
-Version 0.5 adds the first **real SQLite importer** for Betfair historical
-cricket data.
+This is the first complete Test Match Odds importer release.
 
-## What this version can do
+## What it does
 
-- Scan Betfair `.tar` archives
-- Open nested `.bz2` market streams
-- Parse Betfair Stream API JSON
-- Identify likely Test Match `MATCH_ODDS` markets
-- Import market metadata, runners, price updates and settlements into SQLite
-- Skip duplicate Betfair market IDs
-- Log archive imports and integrity warnings
-- Verify the database
-- Show database totals and date coverage
+- Opens Betfair `.tar` archives containing `.bz2` historical market streams.
+- Ignores archive folder names and reads Betfair market metadata.
+- Keeps only three-runner `MATCH_ODDS` markets with a Draw.
+- Identifies Test matches from explicit Test wording or recognised Test nations.
+- Imports markets, runners, price history, best available prices and settlements.
+- Prevents duplicate archives using SHA-256.
+- Prevents duplicate Betfair market IDs and duplicate team/date match keys.
+- Logs corrupt files, missing prices and missing settlements.
+- Reports exactly which years and months are in the database.
+- Runs database integrity checks.
 
-## Install
+## Windows setup
 
-Python 3.11 or newer is recommended.
+1. Install Python 3.11 or newer from python.org.
+2. During installation tick **Add Python to PATH**.
+3. Extract this project ZIP.
+4. Double-click `install_requirements.bat`.
 
-```bash
-python -m pip install -r requirements.txt
-```
+## Import an archive
 
-`orjson` is optional but recommended. The program falls back to Python's
-built-in `json` module if it is unavailable.
+Drag a Betfair `.tar` file onto `import_archive.bat`.
 
-## Commands
+The program creates or updates:
 
-Create a database:
+`cricket_research.sqlite`
 
-```bash
-python cricket_research.py init cricket_research.sqlite
-```
+You can import further archives the same way. Existing data is preserved and duplicates are skipped.
 
-Scan an archive:
+## Check the database
 
-```bash
-python cricket_research.py scan "C:\Betfair\data.tar"
-```
+Double-click:
 
-Audit market metadata without importing:
+- `database_stats.bat`
+- `verify_database.bat`
 
-```bash
-python cricket_research.py audit "C:\Betfair\data.tar" --output audit.csv
-```
+## Command-line alternatives
 
-Import Test Match Odds markets:
-
-```bash
+```bat
 python cricket_research.py import "C:\Betfair\data.tar" --database cricket_research.sqlite
-```
-
-Show database totals:
-
-```bash
 python cricket_research.py stats --database cricket_research.sqlite
-```
-
-Verify integrity:
-
-```bash
 python cricket_research.py verify --database cricket_research.sqlite
 ```
 
-## Test-match detection
+## Note
 
-Betfair historical files do not always expose a perfect "format = Test"
-field. This release therefore combines:
-
-- `marketType == MATCH_ODDS`
-- exactly three runners
-- one runner named `The Draw` or `Draw`
-- event or competition text containing Test-match indicators
-- exclusion rules for T20, ODI, domestic and other short formats
-
-Anything uncertain is logged for review rather than silently treated as a
-confirmed Test match.
-
-## Important
-
-This is the first importer release. Before using it for live-money research,
-run `verify` and inspect `integrity_log`. The next release will improve
-classification and add derived pre-match/price-path statistics.
+This release is for building and validating the historical database. Strategy optimisation is the next stage after the imported data has been checked.

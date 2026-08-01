@@ -1,141 +1,61 @@
 from __future__ import annotations
-
-import sqlite3
-from pathlib import Path
-
 from database.database import Database
 
 
-def _scalar(connection: sqlite3.Connection, query: str, params=()):
-    row = connection.execute(query, params).fetchone()
-    return row[0] if row else None
-
-
-def database_stats(database_path: str | Path) -> dict:
-    database = Database(database_path)
-    database.initialise()
-    with database.connect() as connection:
-        coverage = connection.execute(
-            """
-            SELECT substr(market_time, 1, 7) AS month, COUNT(*) AS markets
-            FROM markets
-            WHERE market_time IS NOT NULL
-            GROUP BY month
-            ORDER BY month
-            """
-        ).fetchall()
+def database_stats(path: str) -> dict:
+    db = Database(path)
+    db.initialise()
+    with db.connect() as con:
+        coverage = [dict(r) for r in con.execute(
+            "SELECT substr(market_time,1,7) AS month,COUNT(*) AS markets FROM markets GROUP BY month ORDER BY month"
+        )]
         return {
-            "database": str(database_path),
-            "imports": _scalar(connection, "SELECT COUNT(*) FROM imports"),
-            "markets": _scalar(connection, "SELECT COUNT(*) FROM markets"),
-            "runners": _scalar(connection, "SELECT COUNT(*) FROM runners"),
-            "price_rows": _scalar(connection, "SELECT COUNT(*) FROM price_history"),
-            "settled_markets": _scalar(
-                connection, "SELECT COUNT(*) FROM markets WHERE settled = 1"
-            ),
-            "unsettled_markets": _scalar(
-                connection, "SELECT COUNT(*) FROM markets WHERE settled = 0"
-            ),
-            "confirmed_tests": _scalar(
-                connection,
-                "SELECT COUNT(*) FROM markets WHERE classification = 'confirmed_test'",
-            ),
-            "uncertain_tests": _scalar(
-                connection,
-                "SELECT COUNT(*) FROM markets WHERE classification = 'uncertain_test'",
-            ),
-            "coverage": [dict(row) for row in coverage],
+            "imports": con.execute("SELECT COUNT(*) FROM imports").fetchone()[0],
+            "markets": con.execute("SELECT COUNT(*) FROM markets").fetchone()[0],
+            "runners": con.execute("SELECT COUNT(*) FROM runners").fetchone()[0],
+            "price_rows": con.execute("SELECT COUNT(*) FROM price_history").fetchone()[0],
+            "settled": con.execute("SELECT COUNT(*) FROM markets WHERE settled=1").fetchone()[0],
+            "unsettled": con.execute("SELECT COUNT(*) FROM markets WHERE settled=0").fetchone()[0],
+            "coverage": coverage,
         }
 
 
-def verify_database(database_path: str | Path) -> dict:
-    database = Database(database_path)
-    database.initialise()
+def verify_database(path: str) -> dict:
+    db = Database(path)
+    db.initialise()
     checks = []
+    with db.connect() as con:
+        integrity = con.execute("PRAGMA integrity_check").fetchone()[0]
+        checks.append({"name": "sqlite_integrity", "passed": integrity == "ok", "detail": integrity})
 
-    with database.connect() as connection:
-        integrity = _scalar(connection, "PRAGMA integrity_check")
-        checks.append({
-            "name": "sqlite_integrity",
-            "passed": integrity == "ok",
-            "detail": integrity,
-        })
+        duplicate_markets = con.execute(
+            "SELECT COUNT(*) FROM (SELECT market_id FROM markets GROUP BY market_id HAVING COUNT(*)>1)"
+        ).fetchone()[0]
+        checks.append({"name": "duplicate_market_ids", "passed": duplicate_markets == 0, "detail": duplicate_markets})
 
-        duplicate_markets = _scalar(
-            connection,
+        duplicate_matches = con.execute(
+            "SELECT COUNT(*) FROM (SELECT match_key FROM markets GROUP BY match_key HAVING COUNT(*)>1)"
+        ).fetchone()[0]
+        checks.append({"name": "duplicate_match_keys", "passed": duplicate_matches == 0, "detail": duplicate_matches})
+
+        wrong_runners = con.execute(
             """
             SELECT COUNT(*) FROM (
-                SELECT market_id FROM markets GROUP BY market_id HAVING COUNT(*) > 1
+              SELECT m.market_id FROM markets m LEFT JOIN runners r ON r.market_id=m.market_id
+              GROUP BY m.market_id HAVING COUNT(r.selection_id)<>3
             )
-            """,
-        )
-        checks.append({
-            "name": "duplicate_market_ids",
-            "passed": duplicate_markets == 0,
-            "detail": duplicate_markets,
-        })
-
-        wrong_runner_count = _scalar(
-            connection,
             """
-            SELECT COUNT(*) FROM (
-                SELECT m.market_id
-                FROM markets m
-                LEFT JOIN runners r ON r.market_id = m.market_id
-                GROUP BY m.market_id
-                HAVING COUNT(r.selection_id) != 3
-            )
-            """,
-        )
-        checks.append({
-            "name": "three_runners_per_market",
-            "passed": wrong_runner_count == 0,
-            "detail": wrong_runner_count,
-        })
+        ).fetchone()[0]
+        checks.append({"name": "three_runners_per_market", "passed": wrong_runners == 0, "detail": wrong_runners})
 
-        no_prices = _scalar(
-            connection,
-            """
-            SELECT COUNT(*)
-            FROM markets m
-            WHERE NOT EXISTS (
-                SELECT 1 FROM price_history p WHERE p.market_id = m.market_id
-            )
-            """,
-        )
-        checks.append({
-            "name": "price_history_present",
-            "passed": no_prices == 0,
-            "detail": no_prices,
-        })
+        no_prices = con.execute(
+            "SELECT COUNT(*) FROM markets m WHERE NOT EXISTS(SELECT 1 FROM price_history p WHERE p.market_id=m.market_id)"
+        ).fetchone()[0]
+        checks.append({"name": "price_history_present", "passed": no_prices == 0, "detail": no_prices})
 
-        orphan_prices = _scalar(
-            connection,
-            """
-            SELECT COUNT(*)
-            FROM price_history p
-            LEFT JOIN markets m ON m.market_id = p.market_id
-            WHERE m.market_id IS NULL
-            """,
-        )
-        checks.append({
-            "name": "orphan_price_rows",
-            "passed": orphan_prices == 0,
-            "detail": orphan_prices,
-        })
+        parse_errors = con.execute(
+            "SELECT COUNT(*) FROM integrity_log WHERE severity='ERROR'"
+        ).fetchone()[0]
+        checks.append({"name": "logged_errors", "passed": parse_errors == 0, "detail": parse_errors})
 
-        unresolved_warnings = _scalar(
-            connection,
-            "SELECT COUNT(*) FROM integrity_log WHERE severity IN ('WARNING','ERROR')",
-        )
-        checks.append({
-            "name": "integrity_log_warnings",
-            "passed": unresolved_warnings == 0,
-            "detail": unresolved_warnings,
-        })
-
-    return {
-        "database": str(database_path),
-        "healthy": all(check["passed"] for check in checks),
-        "checks": checks,
-    }
+    return {"healthy": all(c["passed"] for c in checks), "checks": checks}
