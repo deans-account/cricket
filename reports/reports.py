@@ -1,1 +1,1 @@
-# reports
+"""Future database reports."""

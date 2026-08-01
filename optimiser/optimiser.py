@@ -1,1 +1,1 @@
-# future optimiser
+"""Future strategy optimiser."""

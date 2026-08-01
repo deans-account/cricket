@@ -1,1 +1,4 @@
-{"database":"cricket_research.sqlite"}
+{
+  "database": "cricket_research.sqlite",
+  "log_level": "INFO"
+}

@@ -1,2 +1,1 @@
-orjson
-pandas
+orjson>=3.10
