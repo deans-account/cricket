@@ -10,7 +10,7 @@ from reports.exporter import export_market_summary
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Betfair Cricket Research v0.8")
+    parser = argparse.ArgumentParser(description="Betfair Cricket Research v1.0")
     sub = parser.add_subparsers(dest="command")
 
     p = sub.add_parser("init", help="Create the SQLite database")

@@ -171,6 +171,8 @@ def import_archive(
                 if limit is not None and counts["files_scanned"] >= limit:
                     break
                 counts["files_scanned"] += 1
+                if counts["files_scanned"] % 1000 == 0:
+                    print(f"Scanned {counts['files_scanned']:,} market files; imported {counts['markets_imported']:,} Tests...")
 
                 try:
                     handle = archive.extractfile(member)
