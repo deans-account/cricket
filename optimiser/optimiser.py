@@ -1,1 +1,7 @@
-"""Strategy optimiser will be added after the importer is validated."""
+"""Planned optimiser.
+
+Future commands:
+- optimise draw
+- optimise favourite
+- walk-forward
+"""
